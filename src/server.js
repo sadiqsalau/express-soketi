@@ -298,6 +298,15 @@ class Server {
             )
           : http.createServer(serverApp);
 
+        /** Json */
+        serverApp.use(
+          express.json({
+            verify: (req, res, buf) => {
+              req.rawBody = buf;
+            },
+          })
+        );
+
         /** Add websocket */
         expressWs(serverApp, this.serverProcess);
 
@@ -650,7 +659,8 @@ class Server {
           res.locals.query = req.query;
           res.locals.method = req.method;
           res.locals.path = req.path;
-          res.locals.req = req;
+          res.locals.body = req.body;
+          res.locals.rawBody = req.rawBody;
 
           return this.httpHandler.events(res);
         });
@@ -659,7 +669,8 @@ class Server {
           res.locals.query = req.query;
           res.locals.method = req.method;
           res.locals.path = req.path;
-          res.locals.req = req;
+          res.locals.body = req.body;
+          res.locals.rawBody = req.rawBody;
 
           return this.httpHandler.batchEvents(res);
         });
@@ -673,7 +684,8 @@ class Server {
             res.locals.query = req.query;
             res.locals.method = req.method;
             res.locals.path = req.path;
-            res.locals.req = req;
+            res.locals.body = req.body;
+            res.locals.rawBody = req.rawBody;
 
             return this.httpHandler.terminateUserConnections(res);
           }

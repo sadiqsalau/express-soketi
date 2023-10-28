@@ -429,25 +429,8 @@ class HttpHandler {
     return this.sendJson(res, { error, code: 500 }, 500);
   }
   jsonBodyMiddleware(res, next) {
-    this.readJson(
-      res,
-      (body, rawBody) => {
-        res.locals.body = body;
-        res.locals.rawBody = rawBody;
-
-        let requestSizeInMb = Utils.dataToMegabytes(rawBody);
-        if (requestSizeInMb > this.server.options.httpApi.requestLimitInMb) {
-          return this.entityTooLargeResponse(
-            res,
-            "The payload size is too big."
-          );
-        }
-        next(null, res);
-      },
-      (err) => {
-        return this.badResponse(res, "The received data is incorrect.");
-      }
-    );
+    /** Handled in express */
+    next(null, res);
   }
   corkMiddleware(res, next) {
     next(null, res);
@@ -563,50 +546,6 @@ class HttpHandler {
           resolve(res);
         }
       );
-    });
-  }
-
-  /**
-   * Read the JSON content of a request.
-   */
-  readJson(res, cb) {
-    let buffer;
-    let loggingAction = (payload) => {
-      if (this.server.options.debug) {
-        Log.httpTitle("⚡ HTTP Payload received");
-        Log.http(payload);
-      }
-    };
-
-    res.locals.req.on("data", (ab) => {
-      let chunk = Buffer.from(ab);
-
-      if (buffer) {
-        buffer = Buffer.concat([buffer, chunk]);
-      } else {
-        buffer = Buffer.concat([chunk]);
-      }
-    });
-
-    res.locals.req.on("end", () => {
-      let json = {};
-      let raw = "{}";
-
-      if (buffer) {
-        try {
-          json = JSON.parse(buffer);
-        } catch (e) {
-          //
-        }
-        try {
-          raw = buffer.toString();
-        } catch (e) {
-          //
-        }
-
-        cb(json, raw);
-        loggingAction(json);
-      }
     });
   }
 
