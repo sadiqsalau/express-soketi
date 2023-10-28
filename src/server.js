@@ -302,6 +302,7 @@ class Server {
         /** Json */
         serverApp.use(
           express.json({
+            limit: this.options.httpApi.requestLimitInMb * 1024 * 1024,
             verify: (req, res, buf) => {
               req.rawBody = buf;
             },
