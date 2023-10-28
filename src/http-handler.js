@@ -13,18 +13,16 @@ class HttpHandler {
     //
   }
   ready(res) {
-    this.attachMiddleware(res, [this.corkMiddleware, this.corsMiddleware]).then(
-      (res) => {
-        if (this.server.closing) {
-          this.serverErrorResponse(
-            res,
-            "The server is closing. Choose another server. :)"
-          );
-        } else {
-          this.send(res, "OK");
-        }
+    this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
+      if (this.server.closing) {
+        this.serverErrorResponse(
+          res,
+          "The server is closing. Choose another server. :)"
+        );
+      } else {
+        this.send(res, "OK");
       }
-    );
+    });
   }
   acceptTraffic(res) {
     this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
@@ -56,58 +54,51 @@ class HttpHandler {
     });
   }
   healthCheck(res) {
-    this.attachMiddleware(res, [this.corkMiddleware, this.corsMiddleware]).then(
-      (res) => {
-        this.send(res, "OK");
-      }
-    );
+    this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
+      this.send(res, "OK");
+    });
   }
   usage(res) {
-    this.attachMiddleware(res, [this.corkMiddleware, this.corsMiddleware]).then(
-      (res) => {
-        let { rss, heapTotal, external, arrayBuffers } = process.memoryUsage();
-        let totalSize = v8.getHeapStatistics().total_available_size;
-        let usedSize = rss + heapTotal + external + arrayBuffers;
-        let freeSize = totalSize - usedSize;
-        let percentUsage = (usedSize / totalSize) * 100;
-        return this.sendJson(res, {
-          memory: {
-            free: freeSize,
-            used: usedSize,
-            total: totalSize,
-            percent: percentUsage,
-          },
-        });
-      }
-    );
+    this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
+      let { rss, heapTotal, external, arrayBuffers } = process.memoryUsage();
+      let totalSize = v8.getHeapStatistics().total_available_size;
+      let usedSize = rss + heapTotal + external + arrayBuffers;
+      let freeSize = totalSize - usedSize;
+      let percentUsage = (usedSize / totalSize) * 100;
+      return this.sendJson(res, {
+        memory: {
+          free: freeSize,
+          used: usedSize,
+          total: totalSize,
+          percent: percentUsage,
+        },
+      });
+    });
   }
   metrics(res) {
-    this.attachMiddleware(res, [this.corkMiddleware, this.corsMiddleware]).then(
-      (res) => {
-        let handleError = (err) => {
-          this.serverErrorResponse(res, "A server error has occurred.");
-        };
-        if (res.locals.query.json) {
-          this.server.metricsManager
-            .getMetricsAsJson()
-            .then((metrics) => {
-              this.sendJson(res, metrics);
-            })
-            .catch(handleError);
-        } else {
-          this.server.metricsManager
-            .getMetricsAsPlaintext()
-            .then((metrics) => {
-              this.send(res, metrics);
-            })
-            .catch(handleError);
-        }
+    this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
+      let handleError = (err) => {
+        this.serverErrorResponse(res, "A server error has occurred.");
+      };
+      if (res.locals.query.json) {
+        this.server.metricsManager
+          .getMetricsAsJson()
+          .then((metrics) => {
+            this.sendJson(res, metrics);
+          })
+          .catch(handleError);
+      } else {
+        this.server.metricsManager
+          .getMetricsAsPlaintext()
+          .then((metrics) => {
+            this.send(res, metrics);
+          })
+          .catch(handleError);
       }
-    );
+    });
   }
   channels(res) {
     this.attachMiddleware(res, [
-      this.corkMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -155,7 +146,6 @@ class HttpHandler {
   }
   channel(res) {
     this.attachMiddleware(res, [
-      this.corkMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -221,7 +211,6 @@ class HttpHandler {
   }
   channelUsers(res) {
     this.attachMiddleware(res, [
-      this.corkMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -251,8 +240,6 @@ class HttpHandler {
   }
   events(res) {
     this.attachMiddleware(res, [
-      this.corkMiddleware,
-      this.jsonBodyMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -281,7 +268,6 @@ class HttpHandler {
   }
   batchEvents(res) {
     this.attachMiddleware(res, [
-      this.jsonBodyMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -324,7 +310,6 @@ class HttpHandler {
   }
   terminateUserConnections(res) {
     this.attachMiddleware(res, [
-      this.jsonBodyMiddleware,
       this.corsMiddleware,
       this.appMiddleware,
       this.authMiddleware,
@@ -399,10 +384,7 @@ class HttpHandler {
   }
   notFound(res) {
     try {
-      this.attachMiddleware(res, [
-        this.corkMiddleware,
-        this.corsMiddleware,
-      ]).then((res) => {
+      this.attachMiddleware(res, [this.corsMiddleware]).then((res) => {
         this.send(res, "", 404);
       });
     } catch (e) {
@@ -428,13 +410,7 @@ class HttpHandler {
   serverErrorResponse(res, error) {
     return this.sendJson(res, { error, code: 500 }, 500);
   }
-  jsonBodyMiddleware(res, next) {
-    /** Handled in express */
-    next(null, res);
-  }
-  corkMiddleware(res, next) {
-    next(null, res);
-  }
+
   corsMiddleware(res, next) {
     res.set(
       "Access-Control-Allow-Origin",
@@ -522,21 +498,8 @@ class HttpHandler {
   attachMiddleware(res, functions) {
     return new Promise((resolve, reject) => {
       let waterfallInit = (callback) => callback(null, res);
-      let abortHandlerMiddleware = (res, callback) => {
-        res.on("close", () => {
-          if (!res.writableFinished) {
-            Log.warning({ message: "Aborted request.", res });
-            // this.serverErrorResponse(res, 'Aborted request.');
-          }
-        });
-        callback(null, res);
-      };
       async.waterfall(
-        [
-          waterfallInit.bind(this),
-          abortHandlerMiddleware.bind(this),
-          ...functions.map((fn) => fn.bind(this)),
-        ],
+        [waterfallInit.bind(this), ...functions.map((fn) => fn.bind(this))],
         (err, res) => {
           if (err) {
             this.serverErrorResponse(res, "A server error has occurred.");
