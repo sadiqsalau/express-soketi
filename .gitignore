@@ -1,0 +1,11 @@
+benchmark/vendor/
+build/
+coverage/
+dist/
+node_modules/
+.env
+benchmark/composer.lock
+config.json
+npm-debug.log
+yarn.lock
+*.db
