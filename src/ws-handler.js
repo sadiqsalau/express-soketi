@@ -25,11 +25,12 @@ class WsHandler {
   /**
    * Handle a new open connection.
    */
-  onOpen(ws, appKey) {
+  configureWs(ws, appKey) {
     if (this.server.options.debug) {
       Log.websocketTitle("👨‍🔬 New connection:");
       Log.websocket({ ws });
     }
+
     ws.sendJson = (data) => {
       try {
         ws.send(JSON.stringify(data));

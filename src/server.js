@@ -269,6 +269,7 @@ class Server {
    */
   async start(callback) {
     Log.br();
+
     this.configureDiscovery().then(() => {
       this.initializeDrivers().then(() => {
         if (this.options.debug) {
@@ -286,7 +287,7 @@ class Server {
         let serverApp = express();
 
         /** Create HTTP\HTTPS server process  */
-        this.serverProcess = this.shouldConfigureSsl()
+        this.serverInstance = this.shouldConfigureSsl()
           ? https.createServer(
               {
                 key: fs.readFileSync(this.options.ssl.keyPath),
@@ -308,7 +309,11 @@ class Server {
         );
 
         /** Add websocket */
-        expressWs(serverApp, this.serverProcess);
+        expressWs(serverApp, this.serverInstance, {
+          wsOptions: {
+            maxPayload: 100 * 1024 * 1024,
+          },
+        });
 
         if (this.options.debug) {
           Log.info("⚡ Initializing the Websocket listeners and channels...");
@@ -326,7 +331,7 @@ class Server {
 
               this.configureMetricsServer(metricsServerApp).then(
                 (metricsServerApp) => {
-                  this.metricsServerProcess = http
+                  this.metricsServerInstance = http
                     .createServer(metricsServerApp)
                     .listen(
                       this.options.metrics.port,
@@ -345,11 +350,13 @@ class Server {
   }
 
   listen(callback) {
-    this.serverProcess.listen(this.options.port, this.options.host, () => {
+    this.serverInstance.listen(this.options.port, this.options.host, () => {
       Log.successTitle("🎉 Server is up and running!");
+
       Log.successTitle(
         `📡 The Websockets server is available at 127.0.0.1:${this.options.port}`
       );
+
       Log.successTitle(
         `🔗 The HTTP API server is available at http://127.0.0.1:${this.options.port}`
       );
@@ -363,7 +370,9 @@ class Server {
           `🌠 Prometheus /metrics endpoint is available on port ${this.options.metrics.port}.`
         );
       }
+
       Log.br();
+
       if (callback) {
         callback(this);
       }
@@ -400,11 +409,11 @@ class Server {
             this.adapter
               .disconnect()
               .then(() => {
-                if (this.serverProcess) {
-                  this.serverProcess.close();
+                if (this.serverInstance) {
+                  this.serverInstance.close();
                 }
-                if (this.metricsServerProcess) {
-                  this.metricsServerProcess.close();
+                if (this.metricsServerInstance) {
+                  this.metricsServerInstance.close();
                 }
               })
               .then(() => resolve());
@@ -571,55 +580,43 @@ class Server {
   /**
    * Configure the WebSocket logic.
    */
-  configureWebsockets(server) {
+  configureWebsockets(serverApp) {
     return new Promise((resolve) => {
       if (this.canProcessRequests()) {
-        server = server.ws(
-          this.url("/app/:id"),
-          (ws, req) => {
-            this.wsHandler.onOpen(ws, req.params.id);
+        serverApp = serverApp.ws(this.url("/app/:id"), (ws, req) => {
+          /** Configure the websocket */
+          this.wsHandler.configureWs(ws, req.params.id);
 
-            ws.on("message", (message) => {
-              this.wsHandler.onMessage(ws, message);
-            });
+          ws.on("message", (message) => {
+            this.wsHandler.onMessage(ws, message);
+          });
 
-            ws.on("close", () => {
-              this.wsHandler.onClose(ws);
-            });
-          },
-          {
-            idleTimeout: 120,
-            maxBackpressure: 1024 * 1024,
-            maxPayloadLength: 100 * 1024 * 1024,
-            message: (ws, message, isBinary) =>
-              this.wsHandler.onMessage(ws, message, isBinary),
-            open: (ws) => this.wsHandler.onOpen(ws),
-            close: (ws, code, message) =>
-              this.wsHandler.onClose(ws, code, message),
-            upgrade: (res, req, context) =>
-              this.wsHandler.handleUpgrade(res, req, context),
-          }
-        );
+          ws.on("close", () => {
+            this.wsHandler.onClose(ws);
+          });
+        });
       }
-      resolve(server);
+      resolve(serverApp);
     });
   }
   /**
    * Configure the HTTP REST API server.
    */
-  configureHttp(server) {
+  configureHttp(serverApp) {
     return new Promise((resolve) => {
-      server.get(this.url("/"), (req, res) =>
+      serverApp.get(this.url("/"), (req, res) =>
         this.httpHandler.healthCheck(res)
       );
-      server.get(this.url("/ready"), (req, res) => this.httpHandler.ready(res));
+      serverApp.get(this.url("/ready"), (req, res) =>
+        this.httpHandler.ready(res)
+      );
 
       if (this.canProcessRequests()) {
-        server.get(this.url("/accept-traffic"), (req, res) =>
+        serverApp.get(this.url("/accept-traffic"), (req, res) =>
           this.httpHandler.acceptTraffic(res)
         );
 
-        server.get(this.url("/apps/:appId/channels"), (req, res) => {
+        serverApp.get(this.url("/apps/:appId/channels"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -628,19 +625,22 @@ class Server {
           return this.httpHandler.channels(res);
         });
 
-        server.get(this.url("/apps/:appId/channels/:channel"), (req, res) => {
-          res.locals.params = {
-            appId: req.params.appId,
-            channel: req.params.channel,
-          };
-          res.locals.query = req.query;
-          res.locals.method = req.method;
-          res.locals.path = req.path;
+        serverApp.get(
+          this.url("/apps/:appId/channels/:channel"),
+          (req, res) => {
+            res.locals.params = {
+              appId: req.params.appId,
+              channel: req.params.channel,
+            };
+            res.locals.query = req.query;
+            res.locals.method = req.method;
+            res.locals.path = req.path;
 
-          return this.httpHandler.channel(res);
-        });
+            return this.httpHandler.channel(res);
+          }
+        );
 
-        server.get(
+        serverApp.get(
           this.url("/apps/:appId/channels/:channel/users"),
           (req, res) => {
             res.locals.params = {
@@ -654,7 +654,7 @@ class Server {
             return this.httpHandler.channelUsers(res);
           }
         );
-        server.post(this.url("/apps/:appId/events"), (req, res) => {
+        serverApp.post(this.url("/apps/:appId/events"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -664,7 +664,8 @@ class Server {
 
           return this.httpHandler.events(res);
         });
-        server.post(this.url("/apps/:appId/batch_events"), (req, res) => {
+
+        serverApp.post(this.url("/apps/:appId/batch_events"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -674,7 +675,8 @@ class Server {
 
           return this.httpHandler.batchEvents(res);
         });
-        server.post(
+
+        serverApp.post(
           this.url("/apps/:appId/users/:userId/terminate_connections"),
           (req, res) => {
             res.locals.params = {
@@ -691,35 +693,37 @@ class Server {
           }
         );
       }
-      server.all(this.url("/*"), (req, res) => {
+      serverApp.all(this.url("/*"), (req, res) => {
         return this.httpHandler.notFound(res);
       });
-      resolve(server);
+      resolve(serverApp);
     });
   }
+
   /**
    * Configure the metrics server at a separate port for under-the-firewall access.
    */
-  configureMetricsServer(metricsServer) {
+  configureMetricsServer(metricsServerApp) {
     return new Promise((resolve) => {
       Log.info("🕵️‍♂️ Initiating metrics endpoints...");
       Log.br();
-      metricsServer.get(this.url("/"), (req, res) =>
+
+      metricsServerApp.get(this.url("/"), (req, res) =>
         this.httpHandler.healthCheck(res)
       );
-      metricsServer.get(this.url("/ready"), (req, res) =>
+      metricsServerApp.get(this.url("/ready"), (req, res) =>
         this.httpHandler.ready(res)
       );
-      metricsServer.get(this.url("/usage"), (req, res) =>
+      metricsServerApp.get(this.url("/usage"), (req, res) =>
         this.httpHandler.usage(res)
       );
-      if (this.options.metrics.enabled) {
-        metricsServer.get(this.url("/metrics"), (req, res) => {
-          res.locals.query = req.query;
-          return this.httpHandler.metrics(res);
-        });
-      }
-      resolve(metricsServer);
+
+      metricsServerApp.get(this.url("/metrics"), (req, res) => {
+        res.locals.query = req.query;
+
+        return this.httpHandler.metrics(res);
+      });
+      resolve(metricsServerApp);
     });
   }
   /**
