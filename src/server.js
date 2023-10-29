@@ -285,21 +285,19 @@ class Server {
 
         /** Initiate server */
         let serverApp = express();
+        let serverRouter = express.Router();
 
-        /** Create HTTP\HTTPS server process  */
-        this.serverInstance = this.shouldConfigureSsl()
-          ? https.createServer(
-              {
-                key: fs.readFileSync(this.options.ssl.keyPath),
-                cert: fs.readFileSync(this.options.ssl.certPath),
-                ca: fs.readFileSync(this.options.ssl.caPath),
-                passphrase: this.options.ssl.passphrase,
-              },
-              serverApp
-            )
-          : http.createServer(serverApp);
+        /** Create HTTP\HTTPS server instance  */
+        this.serverInstance = this.createServerInstance(serverApp);
 
-        /** Json */
+        /** Add websocket */
+        let serverAppWs = expressWs(serverApp, this.serverInstance, {
+          wsOptions: {
+            maxPayload: 100 * 1024 * 1024,
+          },
+        });
+
+        /** Apply Json Middleware */
         serverApp.use(
           express.json({
             limit: this.options.httpApi.requestLimitInMb * 1024 * 1024,
@@ -309,38 +307,40 @@ class Server {
           })
         );
 
-        /** Add websocket */
-        expressWs(serverApp, this.serverInstance, {
-          wsOptions: {
-            maxPayload: 100 * 1024 * 1024,
-          },
-        });
+        /** Apply Websocket to server router */
+        serverAppWs.applyTo(serverRouter);
+
+        /** Mount server router */
+        serverApp.use(this.options.pathPrefix, serverRouter);
 
         if (this.options.debug) {
           Log.info("⚡ Initializing the Websocket listeners and channels...");
         }
 
-        /** Configure server */
-        this.configureWebsockets(serverApp).then((serverApp) => {
-          if (this.options.debug) {
-            Log.info("⚡ Initializing the HTTP webserver...");
-          }
-          this.configureHttp(serverApp).then(() => {
+        /** Configure server router */
+        this.configureWebsockets(serverRouter).then((serverRouter) => {
+          this.configureHttp(serverRouter).then(() => {
             /** Configure metrics */
             if (this.options.metrics.enabled) {
               let metricsServerApp = express();
+              let metricsServerRouter = express.Router();
 
-              this.configureMetricsServer(metricsServerApp).then(
-                (metricsServerApp) => {
-                  this.metricsServerInstance = http
-                    .createServer(metricsServerApp)
-                    .listen(
-                      this.options.metrics.port,
-                      this.options.metrics.host,
-                      () => this.listen(callback)
-                    );
-                }
+              /** Mount metrics server router */
+              metricsServerApp.use(
+                this.options.pathPrefix,
+                metricsServerRouter
               );
+
+              /** Create metrics server instance */
+              this.metricsServerInstance = http.createServer(metricsServerApp);
+
+              this.configureMetricsServer(metricsServerRouter).then(() => {
+                this.metricsServerInstance.listen(
+                  this.options.metrics.port,
+                  this.options.metrics.host,
+                  () => this.listen(callback)
+                );
+              });
             } else {
               this.listen(callback);
             }
@@ -350,7 +350,25 @@ class Server {
     });
   }
 
+  createServerInstance(serverApp) {
+    return this.shouldConfigureSsl()
+      ? https.createServer(
+          {
+            key: fs.readFileSync(this.options.ssl.keyPath),
+            cert: fs.readFileSync(this.options.ssl.certPath),
+            ca: fs.readFileSync(this.options.ssl.caPath),
+            passphrase: this.options.ssl.passphrase,
+          },
+          serverApp
+        )
+      : http.createServer(serverApp);
+  }
+
   listen(callback) {
+    if (this.options.debug) {
+      Log.info("⚡ Initializing the HTTP webserver...");
+    }
+
     this.serverInstance.listen(this.options.port, this.options.host, () => {
       Log.successTitle("🎉 Server is up and running!");
 
@@ -518,7 +536,7 @@ class Server {
    * Generates the URL with the set pathPrefix from options.
    */
   url(path) {
-    return this.options.pathPrefix + path;
+    return path;
   }
   /**
    * Get the cluster prefix name for discover.
@@ -581,10 +599,10 @@ class Server {
   /**
    * Configure the WebSocket logic.
    */
-  configureWebsockets(serverApp) {
+  configureWebsockets(serverRouter) {
     return new Promise((resolve) => {
       if (this.canProcessRequests()) {
-        serverApp = serverApp.ws(this.url("/app/:id"), (ws, req) => {
+        serverRouter = serverRouter.ws(this.url("/app/:id"), (ws, req) => {
           /** Configure the websocket */
           this.wsHandler.configureWs(ws, req.params.id);
 
@@ -597,27 +615,27 @@ class Server {
           });
         });
       }
-      resolve(serverApp);
+      resolve(serverRouter);
     });
   }
   /**
    * Configure the HTTP REST API server.
    */
-  configureHttp(serverApp) {
+  configureHttp(serverRouter) {
     return new Promise((resolve) => {
-      serverApp.get(this.url("/"), (req, res) =>
+      serverRouter.get(this.url("/"), (req, res) =>
         this.httpHandler.healthCheck(res)
       );
-      serverApp.get(this.url("/ready"), (req, res) =>
+      serverRouter.get(this.url("/ready"), (req, res) =>
         this.httpHandler.ready(res)
       );
 
       if (this.canProcessRequests()) {
-        serverApp.get(this.url("/accept-traffic"), (req, res) =>
+        serverRouter.get(this.url("/accept-traffic"), (req, res) =>
           this.httpHandler.acceptTraffic(res)
         );
 
-        serverApp.get(this.url("/apps/:appId/channels"), (req, res) => {
+        serverRouter.get(this.url("/apps/:appId/channels"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -626,7 +644,7 @@ class Server {
           return this.httpHandler.channels(res);
         });
 
-        serverApp.get(
+        serverRouter.get(
           this.url("/apps/:appId/channels/:channel"),
           (req, res) => {
             res.locals.params = {
@@ -641,7 +659,7 @@ class Server {
           }
         );
 
-        serverApp.get(
+        serverRouter.get(
           this.url("/apps/:appId/channels/:channel/users"),
           (req, res) => {
             res.locals.params = {
@@ -655,7 +673,7 @@ class Server {
             return this.httpHandler.channelUsers(res);
           }
         );
-        serverApp.post(this.url("/apps/:appId/events"), (req, res) => {
+        serverRouter.post(this.url("/apps/:appId/events"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -666,7 +684,7 @@ class Server {
           return this.httpHandler.events(res);
         });
 
-        serverApp.post(this.url("/apps/:appId/batch_events"), (req, res) => {
+        serverRouter.post(this.url("/apps/:appId/batch_events"), (req, res) => {
           res.locals.params = { appId: req.params.appId };
           res.locals.query = req.query;
           res.locals.method = req.method;
@@ -677,7 +695,7 @@ class Server {
           return this.httpHandler.batchEvents(res);
         });
 
-        serverApp.post(
+        serverRouter.post(
           this.url("/apps/:appId/users/:userId/terminate_connections"),
           (req, res) => {
             res.locals.params = {
@@ -694,37 +712,37 @@ class Server {
           }
         );
       }
-      serverApp.all(this.url("/*"), (req, res) => {
+      serverRouter.all(this.url("/*"), (req, res) => {
         return this.httpHandler.notFound(res);
       });
-      resolve(serverApp);
+      resolve(serverRouter);
     });
   }
 
   /**
    * Configure the metrics server at a separate port for under-the-firewall access.
    */
-  configureMetricsServer(metricsServerApp) {
+  configureMetricsServer(metricsServerRouter) {
     return new Promise((resolve) => {
       Log.info("🕵️‍♂️ Initiating metrics endpoints...");
       Log.br();
 
-      metricsServerApp.get(this.url("/"), (req, res) =>
+      metricsServerRouter.get(this.url("/"), (req, res) =>
         this.httpHandler.healthCheck(res)
       );
-      metricsServerApp.get(this.url("/ready"), (req, res) =>
+      metricsServerRouter.get(this.url("/ready"), (req, res) =>
         this.httpHandler.ready(res)
       );
-      metricsServerApp.get(this.url("/usage"), (req, res) =>
+      metricsServerRouter.get(this.url("/usage"), (req, res) =>
         this.httpHandler.usage(res)
       );
 
-      metricsServerApp.get(this.url("/metrics"), (req, res) => {
+      metricsServerRouter.get(this.url("/metrics"), (req, res) => {
         res.locals.query = req.query;
 
         return this.httpHandler.metrics(res);
       });
-      resolve(metricsServerApp);
+      resolve(metricsServerRouter);
     });
   }
   /**
